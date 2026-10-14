@@ -23,6 +23,16 @@
   table { border-collapse:collapse; margin-top:16px; color:var(--muted); font-size:14px; }
   td { padding:2px 12px 2px 0; } kbd { background:var(--panel); border:1px solid var(--muted); border-radius:4px; padding:0 5px; color:var(--text); }
   label { color:var(--muted); font-size:14px; }
+  .drops { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:12px; }
+  .drops .drop { background:var(--panel); border:2px dashed var(--muted); border-radius:12px; padding:20px 14px; text-align:center; cursor:pointer; }
+  .drops .drop.over { border-color:var(--accent); } .drops .drop.done { border-style:solid; border-color:var(--ok); }
+  .select { display:none; margin:16px 0; }
+  .select h2 { font-size:16px; margin:12px 0 6px; }
+  .cards { display:flex; gap:8px; flex-wrap:wrap; }
+  .card { background:var(--panel); border:2px solid transparent; border-radius:10px; padding:10px 14px; cursor:pointer; min-width:120px; }
+  .card.sel { border-color:var(--accent); } .card[disabled] { opacity:.4; cursor:not-allowed; }
+  .card small { display:block; color:var(--muted); }
+  #startBtn { margin-top:14px; }
   .guest-only { display:none; }
   body.guest .host-only { display:none; } body.guest .guest-only { display:block; }
 </style>
@@ -30,10 +40,26 @@
 <body>
 <main>
   <h1>Donkey Kong Country Co-op</h1>
-  <p class="host-only">Load your own dump of <em>Donkey Kong Country (USA) (Rev 1)</em> for the SNES. The page checks it, applies the co-op patch, and runs it with snes9x. The game file never leaves your browser.</p>
+  <p class="host-only">Load your own dump of <em>Donkey Kong Country (USA) (Rev 1)</em> for the SNES. The page checks it, applies the co-op patch, and runs it with snes9x. Add your <em>Mortal Kombat 3 (USA)</em> dump too and either player can play as Sub-Zero, drawn from your own MK3 cartridge. The game files never leave your browser.</p>
   <p class="guest-only">You're joining a friend's game as player 2. Their game streams to you here and your controls run the second Kong. Press Start (<kbd>Enter</kbd>) to join once both Kongs are in a level.</p>
   <label class="host-only"><input type="checkbox" id="usePatch" checked> Apply mod patch (<span id="patchName"></span>)</label>
-  <div id="drop" class="host-only" tabindex="0">Drop your <b>.sfc</b> file here, or click to choose it<input type="file" id="file" accept=".sfc,.smc" hidden></div>
+  <div class="drops host-only">
+    <div class="drop" id="dropDkc" tabindex="0"><b>Donkey Kong Country (USA) (Rev 1)</b><br>drop the .sfc here or click (required)<input type="file" id="fileDkc" accept=".sfc,.smc" hidden></div>
+    <div class="drop" id="dropMk3" tabindex="0"><b>Mortal Kombat 3 (USA)</b><br>optional: unlocks Sub-Zero<input type="file" id="fileMk3" accept=".sfc,.smc" hidden></div>
+  </div>
+  <div class="select host-only" id="select">
+    <h2>Player 1</h2>
+    <div class="cards" data-player="p1">
+      <div class="card sel" data-pick="dk"><b>Donkey Kong</b><small>the original</small></div>
+      <div class="card" data-pick="subzero" disabled><b>Sub-Zero</b><small>from your MK3 ROM</small></div>
+    </div>
+    <h2>Player 2</h2>
+    <div class="cards" data-player="p2">
+      <div class="card sel" data-pick="diddy"><b>Diddy Kong</b><small>the original</small></div>
+      <div class="card" data-pick="subzero" disabled><b>Sub-Zero</b><small>from your MK3 ROM</small></div>
+    </div>
+    <button id="startBtn">Start the game</button>
+  </div>
   <div id="status"></div>
   <div id="netplay">
     <button id="invite">Invite a friend online</button>
@@ -62,6 +88,7 @@
 const S9X = "https://unpkg.com/@wasm-gaming/snes9x-wasm@0.1.1/dist/snes9x/snes9x.sdk.js";
 // SHA-1 of the known-good unheadered dump: Donkey Kong Country (USA) (Rev 1).sfc
 const GOOD_SHA1 = "8ee954e15b7d77a7941b107c8243b27acebdcbc0";
+const MK3_SHA1 = "58e4e1259a86faaadbc982176e569cb2038dbac5";   // Mortal Kombat 3 (USA).sfc
 const params = new URLSearchParams(location.search);
 const PATCH_URL = params.get("patch") || "coop.ips";
 const JOIN_ID = params.get("join");
@@ -161,32 +188,70 @@ document.getElementById("invite").onclick = () => {
   peer.on("error", err => net("Online play error: " + err.type + ". Try again.", "bad"));
 };
 
-async function loadRom(file) {
-  if (engine) { say("Reload the page to load a different file."); return; }
+// ---- host setup: ROMs, character select, build ----
+let dkcRom = null, mk3Rom = null;
+const picks = { p1: "dk", p2: "diddy" };
+async function readRom(file) {
   let rom = new Uint8Array(await file.arrayBuffer());
   if (rom.length % 1024 === 512) rom = rom.slice(512);   // drop a copier header
-  const hash = await sha1Hex(rom);
-  if (hash !== GOOD_SHA1) {
-    say("That file doesn't match the Donkey Kong Country (USA) (Rev 1) dump this mod expects (SHA-1 " + hash.slice(0, 12) + "…).", "bad");
-    return;
-  }
+  return { rom, hash: await sha1Hex(rom) };
+}
+async function setDkc(file) {
+  const { rom, hash } = await readRom(file);
+  if (hash !== GOOD_SHA1) { say("That file doesn't match the Donkey Kong Country (USA) (Rev 1) dump this mod expects (SHA-1 " + hash.slice(0, 12) + "…).", "bad"); return; }
+  dkcRom = rom;
+  document.getElementById("dropDkc").classList.add("done");
+  document.getElementById("select").style.display = "block";
+  say("Donkey Kong Country verified. Add MK3 to unlock Sub-Zero, pick characters, then start.", "ok");
+}
+async function setMk3(file) {
+  const { rom, hash } = await readRom(file);
+  if (hash !== MK3_SHA1) { say("That file doesn't match the Mortal Kombat 3 (USA) dump (SHA-1 " + hash.slice(0, 12) + "…).", "bad"); return; }
+  mk3Rom = rom;
+  document.getElementById("dropMk3").classList.add("done");
+  document.querySelectorAll('.card[data-pick="subzero"]').forEach(c => c.removeAttribute("disabled"));
+  say("Mortal Kombat 3 verified: Sub-Zero unlocked.", "ok");
+}
+document.querySelectorAll(".cards").forEach(row => row.addEventListener("click", e => {
+  const card = e.target.closest(".card"); if (!card || card.hasAttribute("disabled")) return;
+  row.querySelectorAll(".card").forEach(c => c.classList.toggle("sel", c === card));
+  picks[row.dataset.player] = card.dataset.pick;
+}));
+async function start() {
+  if (engine || !dkcRom) return;
+  let rom = Uint8Array.from(dkcRom);
   if (document.getElementById("usePatch").checked) {
     try {
       const res = await fetch(PATCH_URL);
       if (!res.ok) throw new Error("HTTP " + res.status);
       rom = applyIPS(rom, new Uint8Array(await res.arrayBuffer()));
-      say("ROM verified, co-op patch applied. Loading snes9x…", "ok");
     } catch (err) {
-      say("ROM verified, but the patch couldn't load (" + err.message + "). Running unmodified.", "bad");
+      say("The co-op patch couldn't load (" + err.message + "). Running unmodified.", "bad");
     }
   }
-  document.getElementById("drop").style.display = "none";
+  if (mk3Rom && (picks.p1 === "subzero" || picks.p2 === "subzero")) {
+    say("Drawing Sub-Zero from your MK3 ROM…", "ok");
+    const { applyFighter, RECIPE } = await import("./crossover.js");
+    const known = await (await fetch("known.json")).json();
+    RECIPE.dkc.kongs.dk.known = known.dk; RECIPE.dkc.kongs.diddy.known = known.diddy;
+    if (picks.p1 === "subzero") applyFighter(rom, mk3Rom, "dk", "subzero");
+    if (picks.p2 === "subzero") applyFighter(rom, mk3Rom, "diddy", "subzero");
+    fixChecksum(rom);
+  }
+  document.querySelector(".drops").style.display = "none";
+  document.getElementById("select").style.display = "none";
   try {
     await run(rom);
     say("Running. Player 1 presses Enter to start; player 2 presses 2 (or Start on pad 2) once both Kongs are in a level.", "ok");
   } catch (err) {
     say("The emulator failed to start: " + err.message, "bad");
   }
+}
+// The cartridge header checksum, so emulators that check it stay happy after the art changes.
+function fixChecksum(rom) {
+  const c = 0xFFDC; rom[c] = 0xFF; rom[c + 1] = 0xFF; rom[c + 2] = 0; rom[c + 3] = 0;
+  let s = 0; for (let i = 0; i < rom.length; i++) s = (s + rom[i]) & 0xFFFF;
+  rom[c] = (s ^ 0xFFFF) & 0xFF; rom[c + 1] = (s ^ 0xFFFF) >> 8; rom[c + 2] = s & 0xFF; rom[c + 3] = s >> 8;
 }
 
 // ============================ guest ============================
@@ -240,13 +305,18 @@ function startGuest() {
 if (JOIN_ID) {
   startGuest();
 } else {
-  const drop = document.getElementById("drop"), input = document.getElementById("file");
-  drop.onclick = () => input.click();
-  input.onchange = () => input.files[0] && loadRom(input.files[0]);
-  drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
-  drop.ondragleave = () => drop.classList.remove("over");
-  drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); e.dataTransfer.files[0] && loadRom(e.dataTransfer.files[0]); };
-  window.loadRom = loadRom;   // for automated testing
+  const wire = (dropId, inputId, fn) => {
+    const drop = document.getElementById(dropId), input = document.getElementById(inputId);
+    drop.onclick = () => input.click();
+    input.onchange = () => input.files[0] && fn(input.files[0]);
+    drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+    drop.ondragleave = () => drop.classList.remove("over");
+    drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); e.dataTransfer.files[0] && fn(e.dataTransfer.files[0]); };
+  };
+  wire("dropDkc", "fileDkc", setDkc);
+  wire("dropMk3", "fileMk3", setMk3);
+  document.getElementById("startBtn").onclick = start;
+  Object.assign(window, { setDkc, setMk3, start, picks });   // for automated testing
 }
 </script>
 </body>
